@@ -1,0 +1,39 @@
+# Build artifacts
+build/
+dist/
+out/
+bin/
+obj/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Test and coverage outputs
+*.gcda
+*.gcno
+*.gcov
+coverage/
+coverage.xml
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+git.txt
