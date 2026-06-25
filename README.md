@@ -33,6 +33,14 @@ find_package(microcrypt CONFIG REQUIRED)
 target_link_libraries(app PRIVATE microcrypt::microcrypt)
 ```
 
+## Documentation
+
+- [Cookbook](docs/COOKBOOK.md)
+- [Verification](docs/VERIFICATION.md)
+- [Release process](docs/RELEASE.md)
+- [Issue triage](docs/ISSUES.md)
+- [Security policy](SECURITY.md)
+
 ## Usage
 
 ```c

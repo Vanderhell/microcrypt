@@ -28,6 +28,7 @@ option(MICROCRYPT_ENABLE_AES_CBC "Enable AES-128-CBC helpers" ON)
 
 set(MICROCRYPT_PACKAGE_NAME microcrypt)
 set(MICROCRYPT_CMAKE_DIR ${CMAKE_INSTALL_LIBDIR}/cmake/${MICROCRYPT_PACKAGE_NAME})
+set(MICROCRYPT_HAVE_OPENSSL 0)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang" AND CMAKE_C_COMPILER_TARGET MATCHES "w64-windows-gnu")
     set(CMAKE_C_STANDARD_LIBRARIES "" CACHE STRING "" FORCE)
@@ -63,6 +64,16 @@ function(microcrypt_apply_warnings target)
     endif()
 endfunction()
 
+if(MICROCRYPT_BUILD_DIFFERENTIAL_TESTS)
+    find_package(OpenSSL QUIET COMPONENTS Crypto)
+    if(OpenSSL_FOUND)
+        set(MICROCRYPT_HAVE_OPENSSL 1)
+        message(STATUS "OpenSSL found: differential oracle support available")
+    else()
+        message(STATUS "OpenSSL not found: differential tests will report NOT VERIFIED")
+    endif()
+endif()
+
 add_library(microcrypt src/mcrypt.c)
 add_library(microcrypt::microcrypt ALIAS microcrypt)
 
@@ -90,21 +101,16 @@ if(MICROCRYPT_BUILD_TESTS)
     target_link_libraries(test_microcrypt PRIVATE microcrypt)
     target_include_directories(test_microcrypt PRIVATE tests)
     microcrypt_apply_warnings(test_microcrypt)
+    if(MICROCRYPT_HAVE_OPENSSL)
+        target_link_libraries(test_microcrypt PRIVATE OpenSSL::Crypto)
+        target_compile_definitions(test_microcrypt PRIVATE MICROCRYPT_HAVE_OPENSSL=1)
+    endif()
 
     add_test(NAME microcrypt_selftest COMMAND test_microcrypt)
 endif()
 
 if(MICROCRYPT_BUILD_EXAMPLES)
     message(STATUS "Examples are not bundled in this repository snapshot")
-endif()
-
-if(MICROCRYPT_BUILD_DIFFERENTIAL_TESTS)
-    find_package(OpenSSL QUIET)
-    if(OpenSSL_FOUND)
-        message(STATUS "OpenSSL found: differential oracle support available")
-    else()
-        message(STATUS "OpenSSL not found: differential tests will report NOT VERIFIED")
-    endif()
 endif()
 
 install(TARGETS microcrypt

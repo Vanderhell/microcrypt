@@ -38,4 +38,6 @@ Desktop.ini
 *.swo
 git.txt
 /build-baseline
+/build-*/
+/stage-*/
 /prompts

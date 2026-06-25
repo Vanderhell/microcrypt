@@ -268,7 +268,7 @@ static mcrypt_status_t sha256_finish_work(mcrypt_sha256_t *work,
     }
 
     idx = work->buffer_len;
-    if (idx > MCRYPT_SHA256_BLOCK_SIZE) {
+    if (idx >= MCRYPT_SHA256_BLOCK_SIZE) {
         return MCRYPT_ERR_INTERNAL;
     }
 
@@ -321,9 +321,6 @@ mcrypt_status_t mcrypt_sha256_update(mcrypt_sha256_t *ctx,
 {
     const uint8_t *input;
     size_t buffered;
-    size_t fill;
-    size_t copy_len;
-
     if (!is_sha_ctx_active(ctx)) {
         return MCRYPT_ERR_INVALID_STATE;
     }
@@ -348,7 +345,7 @@ mcrypt_status_t mcrypt_sha256_update(mcrypt_sha256_t *ctx,
     ctx->total_bytes += (uint64_t)len;
 
     if (buffered != 0u) {
-        fill = MCRYPT_SHA256_BLOCK_SIZE - buffered;
+        size_t fill = MCRYPT_SHA256_BLOCK_SIZE - buffered;
         if (len < fill) {
             memcpy(ctx->buffer + buffered, input, len);
             ctx->buffer_len = buffered + len;
@@ -358,7 +355,6 @@ mcrypt_status_t mcrypt_sha256_update(mcrypt_sha256_t *ctx,
         sha256_transform(ctx->h, ctx->buffer);
         input += fill;
         len -= fill;
-        buffered = 0u;
         ctx->buffer_len = 0u;
     }
 
@@ -369,9 +365,8 @@ mcrypt_status_t mcrypt_sha256_update(mcrypt_sha256_t *ctx,
     }
 
     if (len != 0u) {
-        copy_len = len;
-        memcpy(ctx->buffer, input, copy_len);
-        ctx->buffer_len = copy_len;
+        memcpy(ctx->buffer, input, len);
+        ctx->buffer_len = len;
     }
 
     return MCRYPT_OK;
@@ -813,7 +808,6 @@ mcrypt_status_t mcrypt_aes128_init(mcrypt_aes128_t *ctx,
                                    const uint8_t key[MCRYPT_AES128_KEY_SIZE])
 {
     size_t i;
-    uint32_t temp;
 
     if (ctx == NULL || key == NULL) {
         return MCRYPT_ERR_INVALID_ARGUMENT;
@@ -828,7 +822,7 @@ mcrypt_status_t mcrypt_aes128_init(mcrypt_aes128_t *ctx,
     }
 
     for (i = 4u; i < 44u; ++i) {
-        temp = ctx->round_keys[i - 1u];
+        uint32_t temp = ctx->round_keys[i - 1u];
         if ((i & 3u) == 0u) {
             temp = ((uint32_t)aes_sbox[(temp >> 16) & 0xffu] << 24) |
                    ((uint32_t)aes_sbox[(temp >> 8) & 0xffu] << 16) |

@@ -13,3 +13,5 @@
 - Checked HMAC verification API.
 - Build-system options for tests, strict warnings, differential tests, fuzz smoke, examples, legacy compatibility, and CBC enablement.
 - Security and verification documentation.
+- Release workflow, issue templates, cookbook examples, and release/process documentation.
+- OpenSSL-backed differential test coverage when libcrypto is available.

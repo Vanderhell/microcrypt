@@ -1,10 +1,9 @@
-name: CI
+name: Release
 
 on:
   push:
-    branches: [ master ]
-  pull_request:
-    branches: [ master ]
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -14,26 +13,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: ubuntu-gcc-debug
-            os: ubuntu-latest
-            generator: Ninja
-            build_type: Debug
-            c_compiler: gcc
-            differential: ON
-          - name: ubuntu-clang-release
+          - name: ubuntu-release
             os: ubuntu-latest
             generator: Ninja
             build_type: Release
-            c_compiler: clang
+            c_compiler: gcc
             differential: ON
-          - name: windows-msvc-release
+          - name: windows-release
             os: windows-latest
             generator: Visual Studio 17 2022
             arch: x64
             build_type: Release
             c_compiler: ''
             differential: OFF
-          - name: macos-clang-release
+          - name: macos-release
             os: macos-latest
             generator: Ninja
             build_type: Release

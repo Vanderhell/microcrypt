@@ -10,6 +10,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#if defined(MICROCRYPT_HAVE_OPENSSL)
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#endif
+
 static int hex_value(int c)
 {
     if (c >= '0' && c <= '9') {
@@ -87,6 +92,14 @@ static uint64_t rng_next(uint64_t *state)
     return x;
 }
 
+static void write_random_bytes(uint64_t *seed, uint8_t *buf, size_t len)
+{
+    size_t i;
+    for (i = 0u; i < len; ++i) {
+        buf[i] = (uint8_t)rng_next(seed);
+    }
+}
+
 static void expect_zero(const uint8_t *buf, size_t len)
 {
     size_t i;
@@ -132,10 +145,134 @@ static void sha_one_shot_and_stream(const uint8_t *msg, size_t len, uint8_t dige
     MTEST_ASSERT_EQ(MCRYPT_OK, status);
 }
 
+#if defined(MICROCRYPT_HAVE_OPENSSL)
+static void openssl_sha256(const uint8_t *msg, size_t len, uint8_t digest[32])
+{
+    EVP_MD_CTX *ctx;
+    unsigned int out_len = 0u;
+
+    ctx = EVP_MD_CTX_new();
+    MTEST_ASSERT_TRUE(ctx != NULL);
+    MTEST_ASSERT_EQ(1, EVP_DigestInit_ex(ctx, EVP_sha256(), NULL));
+    if (len != 0u) {
+        MTEST_ASSERT_EQ(1, EVP_DigestUpdate(ctx, msg, len));
+    }
+    MTEST_ASSERT_EQ(1, EVP_DigestFinal_ex(ctx, digest, &out_len));
+    MTEST_ASSERT_EQ((unsigned int)32u, out_len);
+    EVP_MD_CTX_free(ctx);
+}
+
+static void openssl_hmac_sha256(const uint8_t *key,
+                                size_t key_len,
+                                const uint8_t *msg,
+                                size_t len,
+                                uint8_t mac[32])
+{
+    unsigned int out_len = 0u;
+
+    MTEST_ASSERT_TRUE(HMAC(EVP_sha256(),
+                           key,
+                           (int)key_len,
+                           msg,
+                           len,
+                           mac,
+                           &out_len) != NULL);
+    MTEST_ASSERT_EQ((unsigned int)32u, out_len);
+}
+
+static void openssl_aes128_encrypt_block(const uint8_t key[16],
+                                         const uint8_t in[16],
+                                         uint8_t out[16])
+{
+    EVP_CIPHER_CTX *ctx;
+    int produced = 0;
+    int tail = 0;
+
+    ctx = EVP_CIPHER_CTX_new();
+    MTEST_ASSERT_TRUE(ctx != NULL);
+    MTEST_ASSERT_EQ(1, EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, key, NULL));
+    MTEST_ASSERT_EQ(1, EVP_CIPHER_CTX_set_padding(ctx, 0));
+    MTEST_ASSERT_EQ(1, EVP_EncryptUpdate(ctx, out, &produced, in, 16));
+    MTEST_ASSERT_EQ(16, produced);
+    MTEST_ASSERT_EQ(1, EVP_EncryptFinal_ex(ctx, out + produced, &tail));
+    MTEST_ASSERT_EQ(0, tail);
+    EVP_CIPHER_CTX_free(ctx);
+}
+
+static void openssl_aes128_decrypt_block(const uint8_t key[16],
+                                         const uint8_t in[16],
+                                         uint8_t out[16])
+{
+    EVP_CIPHER_CTX *ctx;
+    int produced = 0;
+    int tail = 0;
+
+    ctx = EVP_CIPHER_CTX_new();
+    MTEST_ASSERT_TRUE(ctx != NULL);
+    MTEST_ASSERT_EQ(1, EVP_DecryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, key, NULL));
+    MTEST_ASSERT_EQ(1, EVP_CIPHER_CTX_set_padding(ctx, 0));
+    MTEST_ASSERT_EQ(1, EVP_DecryptUpdate(ctx, out, &produced, in, 16));
+    MTEST_ASSERT_EQ(16, produced);
+    MTEST_ASSERT_EQ(1, EVP_DecryptFinal_ex(ctx, out + produced, &tail));
+    MTEST_ASSERT_EQ(0, tail);
+    EVP_CIPHER_CTX_free(ctx);
+}
+
+static void openssl_aes128_cbc_encrypt(const uint8_t key[16],
+                                       const uint8_t iv[16],
+                                       const uint8_t *in,
+                                       size_t len,
+                                       uint8_t *out)
+{
+    EVP_CIPHER_CTX *ctx;
+    int produced = 0;
+    int tail = 0;
+    uint8_t local_iv[16];
+
+    ctx = EVP_CIPHER_CTX_new();
+    MTEST_ASSERT_TRUE(ctx != NULL);
+    memcpy(local_iv, iv, sizeof local_iv);
+    MTEST_ASSERT_EQ(1, EVP_EncryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, local_iv));
+    MTEST_ASSERT_EQ(1, EVP_CIPHER_CTX_set_padding(ctx, 0));
+    if (len != 0u) {
+        MTEST_ASSERT_EQ(1, EVP_EncryptUpdate(ctx, out, &produced, in, (int)len));
+        MTEST_ASSERT_EQ((int)len, produced);
+    }
+    MTEST_ASSERT_EQ(1, EVP_EncryptFinal_ex(ctx, out + produced, &tail));
+    MTEST_ASSERT_EQ(0, tail);
+    EVP_CIPHER_CTX_free(ctx);
+}
+
+static void openssl_aes128_cbc_decrypt(const uint8_t key[16],
+                                       const uint8_t iv[16],
+                                       const uint8_t *in,
+                                       size_t len,
+                                       uint8_t *out)
+{
+    EVP_CIPHER_CTX *ctx;
+    int produced = 0;
+    int tail = 0;
+    uint8_t local_iv[16];
+
+    ctx = EVP_CIPHER_CTX_new();
+    MTEST_ASSERT_TRUE(ctx != NULL);
+    memcpy(local_iv, iv, sizeof local_iv);
+    MTEST_ASSERT_EQ(1, EVP_DecryptInit_ex(ctx, EVP_aes_128_cbc(), NULL, key, local_iv));
+    MTEST_ASSERT_EQ(1, EVP_CIPHER_CTX_set_padding(ctx, 0));
+    if (len != 0u) {
+        MTEST_ASSERT_EQ(1, EVP_DecryptUpdate(ctx, out, &produced, in, (int)len));
+        MTEST_ASSERT_EQ((int)len, produced);
+    }
+    MTEST_ASSERT_EQ(1, EVP_DecryptFinal_ex(ctx, out + produced, &tail));
+    MTEST_ASSERT_EQ(0, tail);
+    EVP_CIPHER_CTX_free(ctx);
+}
+#endif
+
 MTEST(test_secure_equal_and_clear) {
-    uint8_t a[4] = {1, 2, 3, 4};
-    uint8_t b[4] = {1, 2, 3, 4};
-    uint8_t c[4] = {1, 2, 3, 5};
+    const uint8_t a[4] = {1, 2, 3, 4};
+    const uint8_t b[4] = {1, 2, 3, 4};
+    const uint8_t c[4] = {1, 2, 3, 5};
     uint8_t clear_me[8];
 
     fill_repeat(clear_me, sizeof clear_me, 0xaa);
@@ -576,6 +713,9 @@ static void cbc_in_place_roundtrip(size_t blocks, uint64_t seed)
     uint64_t rng = seed;
 
     fill_repeat(key, sizeof key, 0x11);
+    memset(plain, 0, sizeof plain);
+    memset(work, 0, sizeof work);
+    memset(dec, 0, sizeof dec);
     for (i = 0u; i < sizeof iv; ++i) {
         iv[i] = (uint8_t)rng_next(&rng);
     }
@@ -662,9 +802,120 @@ MTEST(test_fuzz_smoke) {
     }
 }
 
+#if defined(MICROCRYPT_HAVE_OPENSSL)
+static void run_differential_sha256_cases(void)
+{
+    uint64_t seed = 0x5348413235364441ull;
+    uint8_t msg[512];
+    uint8_t digest[32];
+    uint8_t oracle[32];
+    size_t cases;
+
+    for (cases = 0u; cases < 512u; ++cases) {
+        size_t len = (size_t)(rng_next(&seed) % sizeof msg);
+        write_random_bytes(&seed, msg, len);
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(msg, len, digest));
+        openssl_sha256(msg, len, oracle);
+        MTEST_ASSERT_MEM_EQ(oracle, digest, sizeof digest);
+    }
+}
+
+static void run_differential_hmac_cases(void)
+{
+    uint64_t seed = 0x484d414336353641ull;
+    uint8_t key[96];
+    uint8_t msg[512];
+    uint8_t mac[32];
+    uint8_t oracle[32];
+    size_t cases;
+
+    for (cases = 0u; cases < 512u; ++cases) {
+        size_t key_len = (size_t)(rng_next(&seed) % sizeof key);
+        size_t msg_len = (size_t)(rng_next(&seed) % sizeof msg);
+        write_random_bytes(&seed, key, key_len);
+        write_random_bytes(&seed, msg, msg_len);
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key, key_len, msg, msg_len, mac));
+        openssl_hmac_sha256(key, key_len, msg, msg_len, oracle);
+        MTEST_ASSERT_MEM_EQ(oracle, mac, sizeof mac);
+    }
+}
+
+static void run_differential_aes_block_cases(void)
+{
+    uint64_t seed = 0x414553313238424cull;
+    uint8_t key[16];
+    uint8_t plain[16];
+    uint8_t expected_plain[16];
+    uint8_t cipher[16];
+    uint8_t decrypted[16];
+    uint8_t oracle[16];
+    mcrypt_aes128_t aes;
+    size_t cases;
+
+    for (cases = 0u; cases < 512u; ++cases) {
+        write_random_bytes(&seed, key, sizeof key);
+        write_random_bytes(&seed, plain, sizeof plain);
+        memcpy(expected_plain, plain, sizeof expected_plain);
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_encrypt_block(&aes, plain, cipher));
+        openssl_aes128_encrypt_block(key, plain, oracle);
+        MTEST_ASSERT_MEM_EQ(oracle, cipher, sizeof cipher);
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_decrypt_block(&aes, cipher, decrypted));
+        openssl_aes128_decrypt_block(key, oracle, plain);
+        MTEST_ASSERT_MEM_EQ(expected_plain, decrypted, sizeof decrypted);
+        MTEST_ASSERT_MEM_EQ(expected_plain, plain, sizeof plain);
+    }
+}
+
+static void run_differential_aes_cbc_cases(void)
+{
+    uint64_t seed = 0x4145532d43424331ull;
+    uint8_t key[16];
+    uint8_t iv[16];
+    uint8_t plain[16 * 8];
+    uint8_t cipher[16 * 8];
+    uint8_t decrypted[16 * 8];
+    uint8_t oracle_cipher[16 * 8];
+    uint8_t oracle_plain[16 * 8];
+    uint8_t oracle_decrypted[16 * 8];
+    uint8_t final_iv[16];
+    uint8_t oracle_final_iv[16];
+    mcrypt_aes128_t aes;
+    size_t cases;
+
+    for (cases = 0u; cases < 256u; ++cases) {
+        size_t blocks = (size_t)((rng_next(&seed) % 8u) + 1u);
+        size_t len = blocks * 16u;
+
+        write_random_bytes(&seed, key, sizeof key);
+        write_random_bytes(&seed, iv, sizeof iv);
+        write_random_bytes(&seed, plain, len);
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_encrypt(&aes, iv, plain, len, cipher, final_iv));
+        openssl_aes128_cbc_encrypt(key, iv, plain, len, oracle_cipher);
+        memcpy(oracle_final_iv, oracle_cipher + (len - 16u), sizeof oracle_final_iv);
+        MTEST_ASSERT_MEM_EQ(oracle_cipher, cipher, len);
+        MTEST_ASSERT_MEM_EQ(oracle_final_iv, final_iv, sizeof final_iv);
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_decrypt(&aes, iv, cipher, len, decrypted, final_iv));
+        memcpy(oracle_plain, oracle_cipher, len);
+        openssl_aes128_cbc_decrypt(key, iv, oracle_plain, len, oracle_decrypted);
+        MTEST_ASSERT_MEM_EQ(plain, decrypted, len);
+        MTEST_ASSERT_MEM_EQ(plain, oracle_decrypted, len);
+        MTEST_ASSERT_MEM_EQ(oracle_final_iv, final_iv, sizeof final_iv);
+    }
+}
+#endif
+
 MTEST(test_differential_oracle_or_skip) {
 #if defined(MICROCRYPT_HAVE_OPENSSL)
-    MTEST_ASSERT_TRUE(!"oracle path not wired in this environment");
+    run_differential_sha256_cases();
+    run_differential_hmac_cases();
+    run_differential_aes_block_cases();
+    run_differential_aes_cbc_cases();
 #else
     printf("NOT VERIFIED: OpenSSL oracle unavailable\n");
     MTEST_ASSERT_TRUE(1);
