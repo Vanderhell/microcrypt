@@ -1,338 +1,739 @@
 /*
- * microcrypt test suite — NIST/RFC test vectors.
- *
- * Build: gcc -std=c99 -Wall -Wextra -Wpedantic -Werror \
- *        -I../include -I../../microtest/include \
- *        ../src/mcrypt.c test_all.c -lm -o test_all
+ * microcrypt checked API test suite.
  */
 
 #define MTEST_IMPLEMENTATION
 #include "mtest.h"
 #include "mcrypt.h"
 
-/* ── Hex helper ────────────────────────────────────────────────────────── */
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
 
-static void hex_to_bytes(const char *hex, uint8_t *out, int len)
+static int hex_value(int c)
 {
-    for (int i = 0; i < len; i++) {
-        unsigned int val;
-        sscanf(hex + i*2, "%2x", &val);
-        out[i] = (uint8_t)val;
+    if (c >= '0' && c <= '9') {
+        return c - '0';
     }
+    if (c >= 'a' && c <= 'f') {
+        return 10 + (c - 'a');
+    }
+    if (c >= 'A' && c <= 'F') {
+        return 10 + (c - 'A');
+    }
+    return -1;
 }
 
-static int bytes_match_hex(const uint8_t *data, int len, const char *hex)
+static int hex_to_bytes_exact(const char *hex, uint8_t *out, size_t out_len)
 {
-    for (int i = 0; i < len; i++) {
-        unsigned int val;
-        sscanf(hex + i*2, "%2x", &val);
-        if (data[i] != (uint8_t)val) return 0;
+    size_t hex_len;
+    size_t i;
+
+    if (hex == NULL || out == NULL) {
+        return 0;
+    }
+
+    hex_len = strlen(hex);
+    if (hex_len != out_len * 2u) {
+        return 0;
+    }
+
+    for (i = 0u; i < out_len; ++i) {
+        int hi = hex_value((unsigned char)hex[i * 2u]);
+        int lo = hex_value((unsigned char)hex[(i * 2u) + 1u]);
+        if (hi < 0 || lo < 0) {
+            return 0;
+        }
+        out[i] = (uint8_t)((hi << 4) | lo);
     }
     return 1;
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * SHA-256 tests — NIST FIPS 180-4 test vectors
- * ═══════════════════════════════════════════════════════════════════════════ */
-
-MTEST(test_sha256_empty) {
-    /* SHA-256("") */
-    uint8_t digest[32];
-    mcrypt_sha256("", 0, digest);
-    MTEST_ASSERT_TRUE(bytes_match_hex(digest, 32,
-        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+static int hex_equals_bytes(const char *hex, const uint8_t *data, size_t len)
+{
+    uint8_t expected[64];
+    if (len > sizeof expected) {
+        return 0;
+    }
+    if (!hex_to_bytes_exact(hex, expected, len)) {
+        return 0;
+    }
+    return memcmp(expected, data, len) == 0;
 }
 
-MTEST(test_sha256_abc) {
-    /* SHA-256("abc") — NIST example */
-    uint8_t digest[32];
-    mcrypt_sha256("abc", 3, digest);
-    MTEST_ASSERT_TRUE(bytes_match_hex(digest, 32,
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+static void fill_incrementing(uint8_t *buf, size_t len)
+{
+    size_t i;
+    for (i = 0u; i < len; ++i) {
+        buf[i] = (uint8_t)(i & 0xffu);
+    }
 }
 
-MTEST(test_sha256_448bit) {
-    /* SHA-256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq") */
-    const char *msg = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
-    uint8_t digest[32];
-    mcrypt_sha256(msg, (uint32_t)strlen(msg), digest);
-    MTEST_ASSERT_TRUE(bytes_match_hex(digest, 32,
-        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"));
+static void fill_repeat(uint8_t *buf, size_t len, uint8_t value)
+{
+    size_t i;
+    for (i = 0u; i < len; ++i) {
+        buf[i] = value;
+    }
 }
 
-MTEST(test_sha256_incremental) {
-    /* Same as abc but fed byte-by-byte */
+static uint64_t rng_next(uint64_t *state)
+{
+    uint64_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    return x;
+}
+
+static void expect_zero(const uint8_t *buf, size_t len)
+{
+    size_t i;
+    for (i = 0u; i < len; ++i) {
+        MTEST_ASSERT_EQ(0, buf[i]);
+    }
+}
+
+static void expect_value(const uint8_t *buf, size_t len, uint8_t value)
+{
+    size_t i;
+    for (i = 0u; i < len; ++i) {
+        MTEST_ASSERT_EQ((int)value, (int)buf[i]);
+    }
+}
+
+static void sha_one_shot_and_stream(const uint8_t *msg, size_t len, uint8_t digest[32], uint8_t streamed[32])
+{
     mcrypt_sha256_t ctx;
-    mcrypt_sha256_init(&ctx);
-    mcrypt_sha256_update(&ctx, "a", 1);
-    mcrypt_sha256_update(&ctx, "b", 1);
-    mcrypt_sha256_update(&ctx, "c", 1);
-    uint8_t digest[32];
-    mcrypt_sha256_final(&ctx, digest);
-    MTEST_ASSERT_TRUE(bytes_match_hex(digest, 32,
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    size_t offset = 0u;
+    mcrypt_status_t status;
+
+    status = mcrypt_sha256(msg, len, digest);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+
+    status = mcrypt_sha256_init(&ctx);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    while (offset < len) {
+        size_t step = len - offset;
+        if (step > 7u) {
+            step = (offset % 13u) + 1u;
+            if (step > len - offset) {
+                step = len - offset;
+            }
+        }
+        status = mcrypt_sha256_update(&ctx, msg + offset, step);
+        MTEST_ASSERT_EQ(MCRYPT_OK, status);
+        offset += step;
+    }
+    status = mcrypt_sha256_update(&ctx, NULL, 0u);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    status = mcrypt_sha256_final(&ctx, streamed);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
 }
 
-MTEST(test_sha256_long) {
-    /* 64 bytes (exactly one block after padding boundary) */
-    const char *msg = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+/";
-    uint8_t digest[32];
-    mcrypt_sha256(msg, 64, digest);
-    /* Just verify it produces 32 bytes without crashing */
-    MTEST_ASSERT_TRUE(digest[0] != 0 || digest[1] != 0);
+MTEST(test_secure_equal_and_clear) {
+    uint8_t a[4] = {1, 2, 3, 4};
+    uint8_t b[4] = {1, 2, 3, 4};
+    uint8_t c[4] = {1, 2, 3, 5};
+    uint8_t clear_me[8];
+
+    fill_repeat(clear_me, sizeof clear_me, 0xaa);
+    MTEST_ASSERT_TRUE(mcrypt_secure_equal(NULL, NULL, 0u));
+    MTEST_ASSERT_TRUE(!mcrypt_secure_equal(NULL, a, 4u));
+    MTEST_ASSERT_TRUE(mcrypt_secure_equal(a, b, 4u));
+    MTEST_ASSERT_TRUE(!mcrypt_secure_equal(a, c, 4u));
+    mcrypt_secure_clear(clear_me, sizeof clear_me);
+    expect_zero(clear_me, sizeof clear_me);
 }
 
-MTEST(test_sha256_multi_block) {
-    /* 128 bytes — crosses block boundary */
-    uint8_t data[128];
-    for (int i = 0; i < 128; i++) data[i] = (uint8_t)i;
+MTEST(test_sha256_vectors) {
+    const char *abc = "abc";
+    const char *vec448 = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    uint8_t digest[32];
 
-    uint8_t d1[32], d2[32];
-    mcrypt_sha256(data, 128, d1);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256("", 0u, digest));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "e3b0c44298fc1c149afbf4c8996fb924"
+        "27ae41e4649b934ca495991b7852b855", digest, 32u));
 
-    /* Same via incremental (split at 70) */
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(abc, 3u, digest));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "ba7816bf8f01cfea414140de5dae2223"
+        "b00361a396177a9cb410ff61f20015ad", digest, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(vec448, strlen(vec448), digest));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "248d6a61d20638b8e5c026930c3e6039"
+        "a33ce45964ff2167f6ecedd419db06c1", digest, 32u));
+
+    fill_repeat(digest, sizeof digest, 0x5a);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(NULL, 0u, digest));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "e3b0c44298fc1c149afbf4c8996fb924"
+        "27ae41e4649b934ca495991b7852b855", digest, 32u));
+}
+
+MTEST(test_sha256_boundaries_and_streaming) {
+    uint8_t msg[129];
+    uint8_t one_shot[32];
+    uint8_t streamed[32];
+    size_t lengths[] = {1u, 55u, 56u, 57u, 63u, 64u, 65u, 127u, 128u, 129u};
+    size_t i;
+
+    fill_incrementing(msg, sizeof msg);
+    for (i = 0u; i < sizeof lengths / sizeof lengths[0]; ++i) {
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(msg, lengths[i], one_shot));
+        sha_one_shot_and_stream(msg, lengths[i], streamed, one_shot);
+        MTEST_ASSERT_MEM_EQ(one_shot, streamed, 32u);
+    }
+}
+
+MTEST(test_sha256_byte_by_byte) {
+    uint8_t msg[130];
+    uint8_t digest[32];
+    uint8_t stream[32];
     mcrypt_sha256_t ctx;
-    mcrypt_sha256_init(&ctx);
-    mcrypt_sha256_update(&ctx, data, 70);
-    mcrypt_sha256_update(&ctx, data + 70, 58);
-    mcrypt_sha256_final(&ctx, d2);
+    size_t i;
 
-    MTEST_ASSERT_MEM_EQ(d1, d2, 32);
+    fill_incrementing(msg, sizeof msg);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(msg, sizeof msg, digest));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&ctx));
+    for (i = 0u; i < sizeof msg; ++i) {
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_update(&ctx, msg + i, 1u));
+    }
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_final(&ctx, stream));
+    MTEST_ASSERT_MEM_EQ(digest, stream, 32u);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * HMAC-SHA256 tests — RFC 4231 test vectors
- * ═══════════════════════════════════════════════════════════════════════════ */
+MTEST(test_sha256_million_a) {
+    uint8_t block[1000];
+    uint8_t digest[32];
+    mcrypt_sha256_t ctx;
+    size_t i;
+    size_t rounds;
 
-MTEST(test_hmac_rfc4231_1) {
-    /* Test Case 1: key = 0x0b×20, data = "Hi There" */
-    uint8_t key[20];
-    memset(key, 0x0b, 20);
+    fill_repeat(block, sizeof block, (uint8_t)'a');
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&ctx));
+    for (rounds = 0u; rounds < 1000u; ++rounds) {
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_update(&ctx, block, sizeof block));
+    }
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_final(&ctx, digest));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "cdc76e5c9914fb9281a1c7e284d73e67"
+        "f1809a48a497200e046d39ccc7112cd0", digest, 32u));
+    for (i = 0u; i < sizeof block; ++i) {
+        MTEST_ASSERT_EQ((int)'a', (int)block[i]);
+    }
+}
 
+MTEST(test_sha256_lifecycle_and_failure_paths) {
+    uint8_t digest[32];
+    uint8_t snapshot[sizeof(mcrypt_sha256_t)];
+    mcrypt_sha256_t ctx;
+    mcrypt_status_t status;
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&ctx));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_update(&ctx, "abc", 3u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_final(&ctx, digest));
+    fill_repeat(digest, sizeof digest, 0x99);
+    status = mcrypt_sha256_final(&ctx, digest);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, status);
+    expect_zero(digest, sizeof digest);
+
+    status = mcrypt_sha256_update(&ctx, "x", 1u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, status);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_clear(&ctx));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&ctx));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&ctx));
+    ctx.total_bytes = UINT64_MAX / 8u;
+    ctx.buffer_len = 0u;
+    memcpy(snapshot, &ctx, sizeof ctx);
+    status = mcrypt_sha256_update(&ctx, "x", 1u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_LENGTH, status);
+    MTEST_ASSERT_MEM_EQ(snapshot, &ctx, sizeof ctx);
+
+    ctx.total_bytes = UINT64_MAX - 1u;
+    memcpy(snapshot, &ctx, sizeof ctx);
+    status = mcrypt_sha256_update(&ctx, "xy", 2u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_OVERFLOW, status);
+    MTEST_ASSERT_MEM_EQ(snapshot, &ctx, sizeof ctx);
+
+    fill_repeat(digest, sizeof digest, 0x88);
+    status = mcrypt_sha256(NULL, 1u, digest);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+    expect_zero(digest, sizeof digest);
+    status = mcrypt_sha256_update(&ctx, NULL, 1u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+    MTEST_ASSERT_MEM_EQ(snapshot, &ctx, sizeof ctx);
+}
+
+MTEST(test_hmac_vectors_and_incremental) {
     uint8_t mac[32];
-    mcrypt_hmac_sha256(key, 20, "Hi There", 8, mac);
-    MTEST_ASSERT_TRUE(bytes_match_hex(mac, 32,
-        "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"));
-}
-
-MTEST(test_hmac_rfc4231_2) {
-    /* Test Case 2: key = "Jefe", data = "what do ya want for nothing?" */
-    uint8_t mac[32];
-    mcrypt_hmac_sha256("Jefe", 4, "what do ya want for nothing?", 28, mac);
-    MTEST_ASSERT_TRUE(bytes_match_hex(mac, 32,
-        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"));
-}
-
-MTEST(test_hmac_rfc4231_3) {
-    /* Test Case 3: key = 0xaa×20, data = 0xdd×50 */
-    uint8_t key[20], data[50];
-    memset(key, 0xaa, 20);
-    memset(data, 0xdd, 50);
-
-    uint8_t mac[32];
-    mcrypt_hmac_sha256(key, 20, data, 50, mac);
-    MTEST_ASSERT_TRUE(bytes_match_hex(mac, 32,
-        "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"));
-}
-
-MTEST(test_hmac_incremental) {
-    /* Same as test case 2 but fed in parts */
+    uint8_t stream[32];
     mcrypt_hmac_sha256_t ctx;
-    mcrypt_hmac_sha256_init(&ctx, "Jefe", 4);
-    mcrypt_hmac_sha256_update(&ctx, "what do ya ", 11);
-    mcrypt_hmac_sha256_update(&ctx, "want for nothing?", 17);
+    uint8_t key1[20];
+    uint8_t key3[20];
+    uint8_t key4[25];
+    uint8_t key5[20];
+    uint8_t key6[131];
+    uint8_t key7[131];
+    uint8_t data3[50];
+    uint8_t data4[50];
+    uint8_t data6[54];
+    uint8_t data7[152];
+    size_t i;
+
+    fill_repeat(key1, sizeof key1, 0x0b);
+    fill_repeat(key3, sizeof key3, 0xaa);
+    for (i = 0u; i < sizeof key4; ++i) {
+        key4[i] = (uint8_t)(i + 1u);
+    }
+    fill_repeat(key5, sizeof key5, 0x0c);
+    fill_repeat(key6, sizeof key6, 0xaa);
+    fill_repeat(key7, sizeof key7, 0xaa);
+    fill_repeat(data3, sizeof data3, 0xdd);
+    fill_repeat(data4, sizeof data4, 0xcd);
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact(
+        "54657374205573696e67204c61726765"
+        "72205468616e20426c6f636b2d53697a"
+        "65204b6579202d2048617368204b6579"
+        "204669727374", data6, sizeof data6));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact(
+        "54686973206973206120746573742075"
+        "73696e672061206c6172676572207468"
+        "616e20626c6f636b2d73697a65206b65"
+        "7920616e642061206c61726765722074"
+        "68616e20626c6f636b2d73697a652064"
+        "6174612e20546865206b6579206e6565"
+        "647320746f2062652068617368656420"
+        "6265666f7265206265696e6720757365"
+        "642062792074686520484d414320616c"
+        "676f726974686d2e", data7, sizeof data7));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key1, sizeof key1, "Hi There", 8u, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "b0344c61d8db38535ca8afceaf0bf12b"
+        "881dc200c9833da726e9376c2e32cff7", mac, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256("Jefe", 4u, "what do ya want for nothing?", 28u, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "5bdcc146bf60754e6a042426089575c7"
+        "5a003f089d2739839dec58b964ec3843", mac, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key3, sizeof key3, data3, sizeof data3, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "773ea91e36800e46854db8ebd09181a7"
+        "2959098b3ef8c122d9635514ced565fe", mac, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&ctx, "Jefe", 4u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_update(&ctx, "what do ya ", 11u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_update(&ctx, "want for nothing?", 17u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&ctx, stream));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "5bdcc146bf60754e6a042426089575c7"
+        "5a003f089d2739839dec58b964ec3843", stream, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key4, sizeof key4, data4, sizeof data4, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "82558a389a443c0ea4cc819899f2083a"
+        "85f0faa3e578f8077a2e3ff46729665b", mac, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key5, sizeof key5, "Test With Truncation", 20u, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "a3b6167473100ee06e0c796c2955552b", mac, 16u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key6, sizeof key6, data6, sizeof data6, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "60e431591ee0b67f0d8a26aacbf5b77f"
+        "8e0bc6213728c5140546040f0ee37f54", mac, 32u));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key7, sizeof key7, data7, sizeof data7, mac));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "9b09ffa71b942fcb27635fbcd5b0e944"
+        "bfdc63644f0713938a7f51535c3a35e2", mac, 32u));
+}
+
+MTEST(test_hmac_verification_and_cleanup) {
     uint8_t mac[32];
-    mcrypt_hmac_sha256_final(&ctx, mac);
-    MTEST_ASSERT_TRUE(bytes_match_hex(mac, 32,
-        "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"));
+    uint8_t modified[32];
+    mcrypt_hmac_sha256_t ctx;
+    size_t i;
+    mcrypt_status_t status;
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256("Jefe", 4u, "what do ya want for nothing?", 28u, mac));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_verify("Jefe", 4u, "what do ya want for nothing?", 28u, mac));
+    for (i = 0u; i < sizeof mac; ++i) {
+        memcpy(modified, mac, sizeof mac);
+        modified[i] ^= 0x01u;
+        status = mcrypt_hmac_sha256_verify("Jefe", 4u, "what do ya want for nothing?", 28u, modified);
+        MTEST_ASSERT_EQ(MCRYPT_ERR_AUTH_FAILED, status);
+    }
+
+    fill_repeat(modified, sizeof modified, 0x7au);
+    status = mcrypt_hmac_sha256(NULL, 1u, "x", 1u, modified);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+    expect_zero(modified, sizeof modified);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&ctx, "Jefe", 4u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_update(&ctx, "abc", 3u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&ctx, mac));
+    expect_zero(ctx.inner_pad, sizeof ctx.inner_pad);
+    expect_zero(ctx.outer_pad, sizeof ctx.outer_pad);
+    expect_zero(ctx.key_block, sizeof ctx.key_block);
+    expect_zero((const uint8_t *)ctx.inner.h, sizeof ctx.inner.h);
+    expect_zero(ctx.inner.buffer, sizeof ctx.inner.buffer);
+    MTEST_ASSERT_EQ(2, (int)ctx.state);
+    status = mcrypt_hmac_sha256_update(&ctx, "x", 1u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, status);
 }
 
-MTEST(test_hmac_long_key) {
-    /* Key longer than block size → key gets hashed first */
-    uint8_t key[100];
-    memset(key, 0x42, 100);
+MTEST(test_hmac_zero_length_and_null_rules) {
     uint8_t mac[32];
-    mcrypt_hmac_sha256(key, 100, "test", 4, mac);
-    /* Just verify no crash and output is non-zero */
-    MTEST_ASSERT_TRUE(mac[0] != 0 || mac[1] != 0);
+    uint8_t stream[32];
+    mcrypt_hmac_sha256_t ctx;
+    mcrypt_status_t status;
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(NULL, 0u, NULL, 0u, mac));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&ctx, NULL, 0u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&ctx, stream));
+    MTEST_ASSERT_MEM_EQ(mac, stream, 32u);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&ctx, NULL, 0u));
+    status = mcrypt_hmac_sha256_update(&ctx, NULL, 0u);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&ctx, mac));
+
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, mcrypt_hmac_sha256(NULL, 1u, "x", 1u, mac));
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, mcrypt_hmac_sha256("k", 1u, NULL, 1u, mac));
+    status = mcrypt_hmac_sha256_verify(NULL, 0u, NULL, 0u, NULL);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * AES-128 tests — NIST FIPS 197 test vectors
- * ═══════════════════════════════════════════════════════════════════════════ */
-
-MTEST(test_aes128_ecb_encrypt) {
-    /* NIST AES-128 ECB test vector:
-     * Key:       2b7e151628aed2a6abf7158809cf4f3c
-     * Plaintext: 6bc1bee22e409f96e93d7e117393172a
-     * Cipher:    3ad77bb40d7a3660a89ecaf32466ef97 */
-    uint8_t key[16], pt[16], ct[16], expected[16];
-    hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
-    hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", pt, 16);
-    hex_to_bytes("3ad77bb40d7a3660a89ecaf32466ef97", expected, 16);
-
+MTEST(test_aes128_block_vectors_and_inplace) {
+    uint8_t key[16];
+    uint8_t pt[16];
+    uint8_t ct[16];
+    uint8_t dec[16];
+    uint8_t zero[16] = {0};
     mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_encrypt_block(&aes, pt, ct);
 
-    MTEST_ASSERT_MEM_EQ(expected, ct, 16);
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("2b7e151628aed2a6abf7158809cf4f3c", key, sizeof key));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("6bc1bee22e409f96e93d7e117393172a", pt, sizeof pt));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("3ad77bb40d7a3660a89ecaf32466ef97", ct, sizeof ct));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_encrypt_block(&aes, pt, dec));
+    MTEST_ASSERT_MEM_EQ(ct, dec, 16u);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_decrypt_block(&aes, dec, dec));
+    MTEST_ASSERT_MEM_EQ(pt, dec, 16u);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_encrypt_block(&aes, zero, zero));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "7df76b0c1ab899b33e42f047b91b546f", zero, 16u));
+
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("00000000000000000000000000000000", zero, sizeof zero));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, zero));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_encrypt_block(&aes, zero, zero));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "66e94bd4ef8a2c3b884cfa59ca342b2e", zero, 16u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_decrypt_block(&aes, zero, zero));
+    expect_zero(zero, sizeof zero);
+
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("6bc1bee22e409f96e93d7e117393172a", pt, sizeof pt));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_encrypt_block(&aes, pt, pt));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "3ad77bb40d7a3660a89ecaf32466ef97", pt, 16u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_decrypt_block(&aes, pt, pt));
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "6bc1bee22e409f96e93d7e117393172a", pt, 16u));
 }
 
-MTEST(test_aes128_ecb_decrypt) {
-    uint8_t key[16], ct[16], pt[16], expected[16];
-    hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
-    hex_to_bytes("3ad77bb40d7a3660a89ecaf32466ef97", ct, 16);
-    hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", expected, 16);
-
-    mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_decrypt_block(&aes, ct, pt);
-
-    MTEST_ASSERT_MEM_EQ(expected, pt, 16);
-}
-
-MTEST(test_aes128_ecb_roundtrip) {
-    uint8_t key[16] = { 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
-                         0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f };
-    uint8_t pt[16]  = { 0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,
-                         0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff };
-    uint8_t ct[16], dec[16];
-
-    mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_encrypt_block(&aes, pt, ct);
-    mcrypt_aes128_decrypt_block(&aes, ct, dec);
-
-    MTEST_ASSERT_MEM_EQ(pt, dec, 16);
-}
-
-MTEST(test_aes128_ecb_nist_vector2) {
-    /* Second NIST vector:
-     * Key:       2b7e151628aed2a6abf7158809cf4f3c
-     * Plaintext: ae2d8a571e03ac9c9eb76fac45af8e51
-     * Cipher:    f5d3d58503b9699de785895a96fdbaaf */
-    uint8_t key[16], pt[16], ct[16], expected[16];
-    hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
-    hex_to_bytes("ae2d8a571e03ac9c9eb76fac45af8e51", pt, 16);
-    hex_to_bytes("f5d3d58503b9699de785895a96fdbaaf", expected, 16);
-
-    mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_encrypt_block(&aes, pt, ct);
-
-    MTEST_ASSERT_MEM_EQ(expected, ct, 16);
-}
-
-/* ── AES-128-CBC ───────────────────────────────────────────────────────── */
-
-MTEST(test_aes128_cbc_encrypt) {
-    /* NIST AES-128-CBC test:
-     * Key: 2b7e151628aed2a6abf7158809cf4f3c
-     * IV:  000102030405060708090a0b0c0d0e0f
-     * PT:  6bc1bee22e409f96e93d7e117393172a
-     * CT:  7649abac8119b246cee98e9b12e9197d */
-    uint8_t key[16], iv[16], pt[16], ct[16], expected[16];
-    hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
-    hex_to_bytes("000102030405060708090a0b0c0d0e0f", iv, 16);
-    hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", pt, 16);
-    hex_to_bytes("7649abac8119b246cee98e9b12e9197d", expected, 16);
-
-    mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_cbc_encrypt(&aes, iv, pt, ct, 16);
-
-    MTEST_ASSERT_MEM_EQ(expected, ct, 16);
-}
-
-MTEST(test_aes128_cbc_decrypt) {
-    uint8_t key[16], iv[16], ct[16], pt[16], expected[16];
-    hex_to_bytes("2b7e151628aed2a6abf7158809cf4f3c", key, 16);
-    hex_to_bytes("000102030405060708090a0b0c0d0e0f", iv, 16);
-    hex_to_bytes("7649abac8119b246cee98e9b12e9197d", ct, 16);
-    hex_to_bytes("6bc1bee22e409f96e93d7e117393172a", expected, 16);
-
-    mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_cbc_decrypt(&aes, iv, ct, pt, 16);
-
-    MTEST_ASSERT_MEM_EQ(expected, pt, 16);
-}
-
-MTEST(test_aes128_cbc_multi_block) {
-    /* Encrypt 64 bytes (4 blocks), decrypt, verify roundtrip */
+MTEST(test_aes128_block_overlap_and_lifecycle) {
+    uint8_t buf[48];
+    uint8_t out[16];
     uint8_t key[16] = {0};
-    uint8_t iv_enc[16] = {0};
-    uint8_t iv_dec[16] = {0};
-    uint8_t pt[64], ct[64], dec[64];
-
-    for (int i = 0; i < 64; i++) pt[i] = (uint8_t)i;
-
     mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
+    mcrypt_status_t status;
 
-    mcrypt_aes128_cbc_encrypt(&aes, iv_enc, pt, ct, 64);
-    mcrypt_aes128_cbc_decrypt(&aes, iv_dec, ct, dec, 64);
+    fill_incrementing(buf, sizeof buf);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, mcrypt_aes128_encrypt_block(NULL, buf, out));
+    expect_zero(out, sizeof out);
 
-    MTEST_ASSERT_MEM_EQ(pt, dec, 64);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    status = mcrypt_aes128_encrypt_block(&aes, buf, buf + 1u);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_OVERLAP, status);
+    status = mcrypt_aes128_decrypt_block(&aes, buf + 1u, buf);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_OVERLAP, status);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_clear(&aes));
+    status = mcrypt_aes128_encrypt_block(&aes, buf, out);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, status);
+    expect_zero(out, sizeof out);
+
+    status = mcrypt_aes128_init(&aes, NULL);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
 }
 
-MTEST(test_aes128_cbc_iv_chains) {
-    /* Verify IV is updated to last ciphertext block (chaining) */
+static void aes_cbc_vector_check(void)
+{
+    uint8_t key[16];
+    uint8_t iv[16];
+    uint8_t pt[64];
+    uint8_t ct[64];
+    uint8_t out[64];
+    uint8_t chaining[16];
+    mcrypt_aes128_t aes;
+
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("2b7e151628aed2a6abf7158809cf4f3c", key, sizeof key));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact("000102030405060708090a0b0c0d0e0f", iv, sizeof iv));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact(
+        "6bc1bee22e409f96e93d7e117393172a"
+        "ae2d8a571e03ac9c9eb76fac45af8e51"
+        "30c81c46a35ce411e5fbc1191a0a52ef"
+        "f69f2445df4f9b17ad2b417be66c3710", pt, sizeof pt));
+    MTEST_ASSERT_TRUE(hex_to_bytes_exact(
+        "7649abac8119b246cee98e9b12e9197d"
+        "5086cb9b507219ee95db113a917678b2"
+        "73bed6b8e3c1743b7116e69e22229516"
+        "3ff1caa1681fac09120eca307586e1a7", ct, sizeof ct));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_encrypt(&aes, iv, pt, sizeof pt, out, chaining));
+    MTEST_ASSERT_MEM_EQ(ct, out, sizeof ct);
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "3ff1caa1681fac09120eca307586e1a7", chaining, 16u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_decrypt(&aes, iv, ct, sizeof ct, out, chaining));
+    MTEST_ASSERT_MEM_EQ(pt, out, sizeof pt);
+    MTEST_ASSERT_TRUE(hex_equals_bytes(
+        "3ff1caa1681fac09120eca307586e1a7", chaining, 16u));
+}
+
+MTEST(test_aes128_cbc_zero_length_null_and_overlaps) {
     uint8_t key[16] = {0};
     uint8_t iv[16] = {0};
-    uint8_t pt[32] = {0};
-    uint8_t ct[32];
-
+    uint8_t out[16];
+    uint8_t buf[64];
+    uint8_t chaining[16];
     mcrypt_aes128_t aes;
-    mcrypt_aes128_init(&aes, key);
-    mcrypt_aes128_cbc_encrypt(&aes, iv, pt, ct, 32);
+    size_t offset;
+    mcrypt_status_t status;
 
-    /* IV should now equal ct[16..31] (last ciphertext block) */
-    MTEST_ASSERT_MEM_EQ(ct + 16, iv, 16);
+    fill_repeat(out, sizeof out, 0xaa);
+    fill_repeat(chaining, sizeof chaining, 0xbb);
+    fill_incrementing(buf, sizeof buf);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, NULL, 0u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    expect_value(out, sizeof out, 0xaa);
+    fill_repeat(out, sizeof out, 0xaa);
+    status = mcrypt_aes128_cbc_decrypt(&aes, iv, NULL, 0u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    expect_value(out, sizeof out, 0xaa);
+
+    status = mcrypt_aes128_cbc_encrypt(&aes, NULL, buf, 16u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, NULL, 16u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, 16u, NULL, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_ARGUMENT, status);
+
+    for (offset = 1u; offset <= 15u; ++offset) {
+        status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, 32u, buf + offset, chaining);
+        MTEST_ASSERT_EQ(MCRYPT_ERR_OVERLAP, status);
+        status = mcrypt_aes128_cbc_decrypt(&aes, iv, buf + offset, 32u, buf, chaining);
+        MTEST_ASSERT_EQ(MCRYPT_ERR_OVERLAP, status);
+    }
+
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, 1u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_LENGTH, status);
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, 17u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_LENGTH, status);
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, SIZE_MAX - 1u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_LENGTH, status);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_clear(&aes));
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, buf, 16u, out, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_ERR_INVALID_STATE, status);
+    expect_zero(out, sizeof out);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
- * Suites + Main
- * ═══════════════════════════════════════════════════════════════════════════ */
+static void cbc_in_place_roundtrip(size_t blocks, uint64_t seed)
+{
+    uint8_t key[16];
+    uint8_t iv[16];
+    uint8_t plain[16 * 16];
+    uint8_t ref_ct[16 * 16];
+    uint8_t work[16 * 16];
+    uint8_t dec[16 * 16];
+    uint8_t chaining[16];
+    mcrypt_aes128_t aes;
+    size_t len = blocks * 16u;
+    mcrypt_status_t status;
+    size_t i;
+    uint64_t rng = seed;
 
-MTEST_SUITE(sha256) {
-    MTEST_RUN(test_sha256_empty);
-    MTEST_RUN(test_sha256_abc);
-    MTEST_RUN(test_sha256_448bit);
-    MTEST_RUN(test_sha256_incremental);
-    MTEST_RUN(test_sha256_long);
-    MTEST_RUN(test_sha256_multi_block);
+    fill_repeat(key, sizeof key, 0x11);
+    for (i = 0u; i < sizeof iv; ++i) {
+        iv[i] = (uint8_t)rng_next(&rng);
+    }
+    for (i = 0u; i < len; ++i) {
+        plain[i] = (uint8_t)rng_next(&rng);
+    }
+    memcpy(work, plain, len);
+    memcpy(dec, plain, len);
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, plain, len, ref_ct, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+
+    status = mcrypt_aes128_cbc_encrypt(&aes, iv, work, len, work, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    MTEST_ASSERT_MEM_EQ(ref_ct, work, len);
+
+    status = mcrypt_aes128_cbc_decrypt(&aes, iv, ref_ct, len, dec, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    MTEST_ASSERT_MEM_EQ(plain, dec, len);
+
+    memcpy(dec, ref_ct, len);
+    status = mcrypt_aes128_cbc_decrypt(&aes, iv, dec, len, dec, chaining);
+    MTEST_ASSERT_EQ(MCRYPT_OK, status);
+    MTEST_ASSERT_MEM_EQ(plain, dec, len);
 }
 
-MTEST_SUITE(hmac_sha256) {
-    MTEST_RUN(test_hmac_rfc4231_1);
-    MTEST_RUN(test_hmac_rfc4231_2);
-    MTEST_RUN(test_hmac_rfc4231_3);
-    MTEST_RUN(test_hmac_incremental);
-    MTEST_RUN(test_hmac_long_key);
+MTEST(test_aes128_cbc_in_place_and_randomized) {
+    size_t blocks;
+    uint64_t seed = 0x4d435259707421u;
+
+    cbc_in_place_roundtrip(1u, seed);
+    cbc_in_place_roundtrip(2u, seed + 1u);
+    cbc_in_place_roundtrip(4u, seed + 2u);
+    for (blocks = 1u; blocks <= 8u; ++blocks) {
+        cbc_in_place_roundtrip(blocks, seed + (uint64_t)(blocks * 17u));
+    }
 }
 
-MTEST_SUITE(aes128_ecb) {
-    MTEST_RUN(test_aes128_ecb_encrypt);
-    MTEST_RUN(test_aes128_ecb_decrypt);
-    MTEST_RUN(test_aes128_ecb_roundtrip);
-    MTEST_RUN(test_aes128_ecb_nist_vector2);
+MTEST(test_fuzz_smoke) {
+    uint64_t seed = 0xdecafbad12345678ull;
+    uint8_t buf[256];
+    uint8_t key[16];
+    uint8_t iv[16];
+    uint8_t out[256];
+    uint8_t mac[32];
+    uint8_t digest[32];
+    mcrypt_sha256_t sha;
+    mcrypt_hmac_sha256_t hmac;
+    mcrypt_aes128_t aes;
+    size_t cases;
+
+    fill_repeat(key, sizeof key, 0x22);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    for (cases = 0u; cases < 200u; ++cases) {
+        size_t len = (size_t)(rng_next(&seed) % sizeof buf);
+        size_t blocks = len - (len % 16u);
+        size_t j;
+
+        for (j = 0u; j < len; ++j) {
+            buf[j] = (uint8_t)rng_next(&seed);
+        }
+        for (j = 0u; j < sizeof iv; ++j) {
+            iv[j] = (uint8_t)rng_next(&seed);
+        }
+
+        if (blocks == 0u) {
+            MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(buf, len, digest));
+            MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(key, sizeof key, buf, len, mac));
+            continue;
+        }
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&sha));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_update(&sha, buf, len));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_final(&sha, digest));
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&hmac, key, sizeof key));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_update(&hmac, buf, len));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&hmac, mac));
+
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_encrypt(&aes, iv, buf, blocks, out, NULL));
+        MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_decrypt(&aes, iv, out, blocks, out, NULL));
+        MTEST_ASSERT_MEM_EQ(buf, out, blocks);
+    }
 }
 
-MTEST_SUITE(aes128_cbc) {
-    MTEST_RUN(test_aes128_cbc_encrypt);
-    MTEST_RUN(test_aes128_cbc_decrypt);
-    MTEST_RUN(test_aes128_cbc_multi_block);
-    MTEST_RUN(test_aes128_cbc_iv_chains);
+MTEST(test_differential_oracle_or_skip) {
+#if defined(MICROCRYPT_HAVE_OPENSSL)
+    MTEST_ASSERT_TRUE(!"oracle path not wired in this environment");
+#else
+    printf("NOT VERIFIED: OpenSSL oracle unavailable\n");
+    MTEST_ASSERT_TRUE(1);
+#endif
 }
 
-int main(int argc, char **argv) {
+MTEST(test_null_zero_length_rules) {
+    uint8_t digest[32];
+    uint8_t mac[32];
+    uint8_t buf[16];
+    uint8_t iv[16] = {0};
+    mcrypt_sha256_t sha;
+    mcrypt_hmac_sha256_t hmac;
+    mcrypt_aes128_t aes;
+    uint8_t key[16] = {0};
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256(NULL, 0u, digest));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_init(&sha));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_update(&sha, NULL, 0u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_sha256_final(&sha, digest));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256(NULL, 0u, NULL, 0u, mac));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_init(&hmac, NULL, 0u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_update(&hmac, NULL, 0u));
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_hmac_sha256_final(&hmac, mac));
+
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_init(&aes, key));
+    fill_repeat(buf, sizeof buf, 0x55);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_encrypt(&aes, iv, NULL, 0u, buf, NULL));
+    expect_value(buf, sizeof buf, 0x55);
+    MTEST_ASSERT_EQ(MCRYPT_OK, mcrypt_aes128_cbc_decrypt(&aes, iv, NULL, 0u, buf, NULL));
+    expect_value(buf, sizeof buf, 0x55);
+}
+
+MTEST(test_aes128_cbc_vector_check) {
+    aes_cbc_vector_check();
+}
+
+MTEST(test_footprint_measurement) {
+    printf("sizeof(mcrypt_sha256_t)=%zu\n", sizeof(mcrypt_sha256_t));
+    printf("sizeof(mcrypt_hmac_sha256_t)=%zu\n", sizeof(mcrypt_hmac_sha256_t));
+    printf("sizeof(mcrypt_aes128_t)=%zu\n", sizeof(mcrypt_aes128_t));
+    MTEST_ASSERT_TRUE(1);
+}
+
+MTEST_SUITE(crypto) {
+    MTEST_RUN(test_secure_equal_and_clear);
+    MTEST_RUN(test_sha256_vectors);
+    MTEST_RUN(test_sha256_boundaries_and_streaming);
+    MTEST_RUN(test_sha256_byte_by_byte);
+    MTEST_RUN(test_sha256_million_a);
+    MTEST_RUN(test_sha256_lifecycle_and_failure_paths);
+    MTEST_RUN(test_hmac_vectors_and_incremental);
+    MTEST_RUN(test_hmac_verification_and_cleanup);
+    MTEST_RUN(test_hmac_zero_length_and_null_rules);
+    MTEST_RUN(test_aes128_block_vectors_and_inplace);
+    MTEST_RUN(test_aes128_block_overlap_and_lifecycle);
+    MTEST_RUN(test_aes128_cbc_zero_length_null_and_overlaps);
+    MTEST_RUN(test_aes128_cbc_vector_check);
+    MTEST_RUN(test_aes128_cbc_in_place_and_randomized);
+    MTEST_RUN(test_fuzz_smoke);
+    MTEST_RUN(test_differential_oracle_or_skip);
+    MTEST_RUN(test_null_zero_length_rules);
+    MTEST_RUN(test_footprint_measurement);
+}
+
+int main(int argc, char **argv)
+{
     MTEST_BEGIN(argc, argv);
-
-    MTEST_SUITE_RUN(sha256);
-    MTEST_SUITE_RUN(hmac_sha256);
-    MTEST_SUITE_RUN(aes128_ecb);
-    MTEST_SUITE_RUN(aes128_cbc);
-
+    MTEST_SUITE_RUN(crypto);
     return MTEST_END();
 }

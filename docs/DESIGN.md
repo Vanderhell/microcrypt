@@ -1,23 +1,32 @@
-# Design Rationale
+# Design Notes
 
-## 1. Bitwise, not table-based (SHA-256)
-SHA-256 uses a 256-byte constant table (K values). No large lookup tables beyond that. The transform function is the standard 64-round compression.
+## Scope
 
-## 2. Full S-box for AES (512 bytes)
-AES requires S-box (256 bytes) and inverse S-box (256 bytes). These are the standard FIPS 197 tables. On very constrained MCUs, you could compute them on-the-fly, but the 512-byte cost is acceptable for most targets.
+`microcrypt` is a primitive library:
 
-## 3. No side-channel protection
-Constant-time implementations add complexity and are hard to verify without hardware testing. This implementation is for integrity checks and non-critical encryption, not for protecting against physical attackers with oscilloscopes.
+- SHA-256
+- HMAC-SHA256
+- AES-128 block encryption and decryption
+- AES-128-CBC chaining helpers
 
-## 4. Incremental API
-SHA-256 and HMAC support init/update/final pattern. Hash firmware in 64-byte chunks without buffering the entire image.
+It is not a protocol layer and it does not provide padding, AEAD, key exchange, or storage for keys.
 
-## 5. CBC only (no CTR/GCM)
-CBC is simpler and sufficient for config encryption. GCM would add authenticated encryption but requires GF multiplication — future work.
+## Memory model
 
-| Decision | Gains | Costs |
-|----------|-------|-------|
-| Standard tables | Correct, fast | 512 bytes for AES S-boxes |
-| No side-channel | Simple, portable | Not for physical attacks |
-| Incremental | Low memory for large data | Slightly more complex API |
-| CBC only | Simple, sufficient | No authenticated encryption |
+- No heap allocation in the portable core
+- Caller-owned contexts
+- Deterministic memory use
+- Explicit byte-oriented APIs
+- No hidden mutable global state
+
+## CBC boundary
+
+CBC is confidentiality-only. It does not provide authenticity or integrity, and ciphertext is malleable. IV reuse under the same key leaks information. CBC input must be block aligned because this library does not provide padding.
+
+## Security posture
+
+The AES implementation uses lookup tables and is not constant-time on platforms where memory access patterns are observable. HMAC verification compares MAC bytes without an early exit on content differences, but that is not a whole-program constant-time proof.
+
+## Compatibility
+
+The checked API returns `mcrypt_status_t` and uses `size_t` lengths. Legacy compatibility is not the primary interface. Current public version is `2.0.0`.

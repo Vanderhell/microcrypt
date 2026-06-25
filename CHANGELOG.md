@@ -1,10 +1,15 @@
 # Changelog
 
-## [1.0.0] — 2026-03-21
+## [2.0.0] - 2026-06-25
+
+### Changed
+- Replaced void crypto entry points with checked status-returning APIs.
+- Added explicit lifecycle validation for SHA-256, HMAC-SHA256, and AES-128 contexts.
+- Added secure clearing and constant-time MAC comparison helpers.
+- Documented CBC as confidentiality-only and not an authentication scheme.
+- Added installable CMake package exports for `microcrypt::microcrypt`.
 
 ### Added
-- SHA-256 (FIPS 180-4) with one-shot and incremental API.
-- HMAC-SHA256 (RFC 2104) with one-shot and incremental API.
-- AES-128 ECB encrypt/decrypt (FIPS 197).
-- AES-128 CBC encrypt/decrypt with IV chaining.
-- 19 tests with NIST/RFC test vectors.
+- Checked HMAC verification API.
+- Build-system options for tests, strict warnings, differential tests, fuzz smoke, examples, legacy compatibility, and CBC enablement.
+- Security and verification documentation.

@@ -37,3 +37,5 @@ Desktop.ini
 *.swp
 *.swo
 git.txt
+/build-baseline
+/prompts
