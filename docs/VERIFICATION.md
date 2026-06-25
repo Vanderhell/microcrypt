@@ -85,9 +85,29 @@
 
 ### WSL Ubuntu
 
-- `wsl.exe -l -v`
-  - Result: `Windows Subsystem for Linux has no installed distributions.`
-  - Result: WSL Ubuntu sanitizer and differential verification could not be executed in this workspace
+- `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt && pwd && uname -a && gcc --version && clang --version && cmake --version && ninja --version && openssl version"`
+  - Result: `/mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt`
+  - Result: `Linux Vanderhell 6.6.87.2-microsoft-standard-WSL2`
+  - Result: `gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0`
+  - Result: `Ubuntu clang version 18.1.3`
+  - Result: `cmake version 3.28.3`
+  - Result: `1.11.1`
+  - Result: `OpenSSL 3.0.13 30 Jan 2024`
+- `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt && rm -rf build-wsl-sanitize && cmake -S . -B build-wsl-sanitize -G Ninja -DMICROCRYPT_BUILD_TESTS=ON -DMICROCRYPT_BUILD_DIFFERENTIAL_TESTS=ON -DMICROCRYPT_STRICT_WARNINGS=ON -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer'"`
+  - Result: configured successfully with Clang 18.1.3
+  - Result: OpenSSL found: differential oracle support available
+  - Result: build files written to `build-wsl-sanitize`
+- `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt && cmake --build build-wsl-sanitize --parallel"`
+  - Result: build passed
+  - Result: linked `test_microcrypt`
+- `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt && ctest --test-dir build-wsl-sanitize --output-on-failure"`
+  - Result: `1/1` tests passed
+  - Result: `0` tests failed
+  - Result: total test time `0.38 sec`
+- `C:\Windows\System32\wsl.exe -d Ubuntu-24.04 -- bash -lc "cd /mnt/c/Users/vande/Desktop/github/microcrypt/microcrypt && ./build-wsl-sanitize/test_microcrypt"`
+  - Result: `Suites: 1  Tests: 18  Assertions: 26332  Failures: 0`
+  - Result: `test_differential_oracle_or_skip` passed
+  - Result: no `NOT VERIFIED: OpenSSL oracle unavailable` line
 
 ### Notes
 
