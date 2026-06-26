@@ -92,6 +92,7 @@ static uint64_t rng_next(uint64_t *state)
     return x;
 }
 
+#if defined(MICROCRYPT_HAVE_OPENSSL)
 static void write_random_bytes(uint64_t *seed, uint8_t *buf, size_t len)
 {
     size_t i;
@@ -99,6 +100,7 @@ static void write_random_bytes(uint64_t *seed, uint8_t *buf, size_t len)
         buf[i] = (uint8_t)rng_next(seed);
     }
 }
+#endif
 
 static void expect_zero(const uint8_t *buf, size_t len)
 {

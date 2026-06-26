@@ -28,10 +28,10 @@ jobs:
             differential: ON
           - name: windows-msvc-release
             os: windows-latest
-            generator: Visual Studio 17 2022
-            arch: x64
+            generator: Ninja
+            arch: ''
             build_type: Release
-            c_compiler: ''
+            c_compiler: cl
             differential: OFF
           - name: macos-clang-release
             os: macos-latest
