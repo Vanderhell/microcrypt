@@ -87,7 +87,7 @@ jobs:
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            build-consumer/${{ matrix.build_type }}/consumer.exe
+            build-consumer/consumer.exe
           else
             ./build-consumer/consumer
           fi
